@@ -7,8 +7,8 @@ var VERSION = '0.0.1';
 
 program
 	.version(VERSION)
-	.option('--host <hostname>', 'Remote hostname of auction to control')
-	.option('--port <n>', 'Remote port of auction to control')
+	.option('--host <hostname>', 'Remote hostname of server to control')
+	.option('--port <n>', 'Remote port of server to control')
 	.parse(process.argv);
 
 var rpc_opts = {
@@ -18,10 +18,10 @@ var rpc_opts = {
 
 function list_commands()
 {
-	var s = "auctionadm command summary:\n";
-	s += "dump\t\tDump auctiond database\n";
+	var s = "serveradm command summary:\n";
+	s += "dump\t\tDump serverd database\n";
 	s += "help\t\tList this command summary\n";
-	s += "stop\t\tStop auctiond\n";
+	s += "stop\t\tStop serverd\n";
 	console.log(s);
 }
 

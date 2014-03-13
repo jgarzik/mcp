@@ -5,14 +5,14 @@ var program = require('commander');
 var EncFile = require('bitcore/util/EncFile');
 var timeUtil = require('bitcore/util/time');
 var coinUtil = require('bitcore/util/util');
-var Transaction = require('bitcore/Transaction').class();
-var Parser = require('bitcore/util/BinaryParser').class();
+var Transaction = require('bitcore/Transaction');
+var Parser = require('bitcore/util/BinaryParser');
 var jrpcServer = require('../jrpcServer');
 var kvfile = require('../kvfile');
 var winston = require('winston');
-var RpcClient = require('bitcore/RpcClient').class();
-var Script = require('bitcore/Script').class();
-var Address = require('bitcore/Address').class();
+var RpcClient = require('bitcore/RpcClient');
+var Script = require('bitcore/Script');
+var Address = require('bitcore/Address');
 
 var VERSION = '0.0.1';
 var ENC_METHOD = 'aes-256-cbc';
@@ -60,6 +60,52 @@ function dbWriteSync()
 	fs.renameSync(tmpFn, db_fn);
 }
 
+function cmdChannelOpen(req)
+{
+	return jrpcServer.err(req, -99, 'not implemented yet');
+}
+
+function cmdChannelSetRefund(req)
+{
+	var params = req.params[0];
+	if (!('channel.id' in params) ||
+	    !('tx' in params))
+		return jrpcServer.err(req, -10, 'missing params');
+
+	return jrpcServer.err(req, -99, 'not implemented yet');
+}
+
+function cmdChannelCommit(req)
+{
+	var params = req.params[0];
+	if (!('channel.id' in params) ||
+	    !('tx' in params))
+		return jrpcServer.err(req, -10, 'missing params');
+
+	return jrpcServer.err(req, -99, 'not implemented yet');
+}
+
+function cmdChannelSetPayment(req)
+{
+	var params = req.params[0];
+	if (!('channel.id' in params) ||
+	    !('tx' in params))
+		return jrpcServer.err(req, -10, 'missing params');
+
+	return jrpcServer.err(req, -99, 'not implemented yet');
+}
+
+function cmdChannelPay(req)
+{
+	var params = req.params[0];
+	if (!('channel.id' in params) ||
+	    !('signature' in params) ||
+	    !('amount' in params))
+		return jrpcServer.err(req, -10, 'missing params');
+
+	return jrpcServer.err(req, -99, 'not implemented yet');
+}
+
 function handle_jsonrpc(req)
 {
 	if (!Array.isArray(req.params) ||
@@ -68,21 +114,17 @@ function handle_jsonrpc(req)
 		return jrpcServer.err(req, -2, 'invalid params');
 
 	switch (req.method) {
-	case "auction.prepare":
-		return cmdAuctionPrep(req);
-	
-	case "auction.create":
-		return cmdAuctionCreate(req);
-	
-	case "auction.bid.info":
-		return cmdAuctionBidInfo(req);
-	
-	case "auction.bid":
-		return cmdAuctionBid(req);
-	
-	case "auction.info":
-		return cmdAuctionInfo(req);
-	
+	case "channel.open":
+		return cmdChannelOpen(req);
+	case "channel.setRefund":
+		return cmdChannelSetRefund(req);
+	case "channel.commit":
+		return cmdChannelCommit(req);
+	case "channel.setPayment":
+		return cmdChannelSetPayment(req);
+	case "channel.pay":
+		return cmdChannelPay(req);
+
 	default:
 		return jrpcServer.err(req, -1, 'method not found');
 	}

@@ -1,7 +1,7 @@
 
-auctiond.db
-auctiond.cfg
-auctiond.log
+serverd.db
+serverd.cfg
+serverd.log
 
 server.cert
 server.key
