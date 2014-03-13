@@ -1,5 +1,0 @@
-
-at startup:
-	expire nonces, set timeouts
-	expire auctions, set timeouts
-
