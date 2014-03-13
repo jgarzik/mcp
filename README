@@ -14,4 +14,8 @@ Run with --help to get a command line summary.
 
 Run the utilities with no arguments, to obtain a list of commands.
 
+Server events are logged via the flexible 'winston' module.
+
+See comments in example-serverd.cfg for further server configuration.
+
 

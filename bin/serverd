@@ -76,14 +76,39 @@ function dbWriteSync()
 	}
 }
 
+function decodeHexTx(hexStr)
+{
+	var reHex = /^[0-9a-zA-Z]+$/;
+	if (!reHex.test(hexStr))
+		return undefined;
+	if ((hexStr.length % 2) == 1)
+		return undefined;
+
+	var buf = new Buffer(hexStr, 'hex');
+	var tx = new Transaction();
+	tx.parse(txbuf);
+
+	return tx;
+}
+
 function cmdChannelOpen(req)
 {
+	// generate a new public key
 	var newKey = new WalletKey({network: network});
 	newKey.generate();
 
+	// add to wallet
 	var obj = newKey.storeObj();
 	wallet.addKey(obj);
 
+	// derive channel id (aka bitcoin address) from new key
+	var channelId = obj.addr;
+	db.channels[channelId] = {
+		created: obj.created,
+		state: 'open',
+	};
+
+	// flush wallet, db updates
 	dbWriteSync();
 
 	var result = { "pubkey": obj.pub };
@@ -92,41 +117,90 @@ function cmdChannelOpen(req)
 
 function cmdChannelSetRefund(req)
 {
+	// load and validate params
 	var params = req.params[0];
 	if (!('channel.id' in params) ||
 	    !('tx' in params))
 		return jrpcServer.err(req, -10, 'missing params');
+
+	var channelId = params["channel.id"];
+	var channel = db.channels[channelId];
+	if (!channel)
+		return jrpcServer.err(req, -10, 'invalid channel id');
+	if (channel.state != 'open')
+		return jrpcServer.err(req, -12, 'invalid channel state');
+	var tx = decodeHexTx(params.tx);
+	if (!tx)
+		return jrpcServer.err(req, -15, 'invalid transaction');
+
+	// TODO FIXME
 
 	return jrpcServer.err(req, -99, 'not implemented yet');
 }
 
 function cmdChannelCommit(req)
 {
+	// load and validate params
 	var params = req.params[0];
 	if (!('channel.id' in params) ||
 	    !('tx' in params))
 		return jrpcServer.err(req, -10, 'missing params');
+
+	var channelId = params["channel.id"];
+	var channel = db.channels[channelId];
+	if (!channel)
+		return jrpcServer.err(req, -10, 'invalid channel id');
+	if (channel.state != 'signedRefund')
+		return jrpcServer.err(req, -12, 'invalid channel state');
+	var tx = decodeHexTx(params.tx);
+	if (!tx)
+		return jrpcServer.err(req, -15, 'invalid transaction');
+
+	// TODO FIXME
 
 	return jrpcServer.err(req, -99, 'not implemented yet');
 }
 
 function cmdChannelSetPayment(req)
 {
+	// load and validate params
 	var params = req.params[0];
 	if (!('channel.id' in params) ||
 	    !('tx' in params))
 		return jrpcServer.err(req, -10, 'missing params');
+
+	var channelId = params["channel.id"];
+	var channel = db.channels[channelId];
+	if (!channel)
+		return jrpcServer.err(req, -10, 'invalid channel id');
+	if (channel.state != 'commit')
+		return jrpcServer.err(req, -12, 'invalid channel state');
+	var tx = decodeHexTx(params.tx);
+	if (!tx)
+		return jrpcServer.err(req, -15, 'invalid transaction');
+
+	// TODO FIXME
 
 	return jrpcServer.err(req, -99, 'not implemented yet');
 }
 
 function cmdChannelPay(req)
 {
+	// load and validate params
 	var params = req.params[0];
 	if (!('channel.id' in params) ||
 	    !('signature' in params) ||
 	    !('amount' in params))
 		return jrpcServer.err(req, -10, 'missing params');
+
+	var channelId = params["channel.id"];
+	var channel = db.channels[channelId];
+	if (!channel)
+		return jrpcServer.err(req, -10, 'invalid channel id');
+	if (channel.state != 'active')
+		return jrpcServer.err(req, -12, 'invalid channel state');
+
+	// TODO FIXME
 
 	return jrpcServer.err(req, -99, 'not implemented yet');
 }
@@ -204,6 +278,11 @@ function read_db()
 				version:	VERSION,
 				time:		timeUtil.curtime(),
 			},
+
+			// member properties:
+			// created: creation timestamp (== key generation time)
+			// state: open, signedRefund, commit, active
+			channels: {},
 		};
 
 		dbWriteSync();
