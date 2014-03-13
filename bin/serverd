@@ -13,6 +13,7 @@ var winston = require('winston');
 var RpcClient = require('bitcore/RpcClient');
 var Script = require('bitcore/Script');
 var Address = require('bitcore/Address');
+var Wallet = require('bitcore/Wallet');
 
 var VERSION = '0.0.1';
 var ENC_METHOD = 'aes-256-cbc';
@@ -21,6 +22,7 @@ program
 	.version(VERSION)
 	.option('--init', 'Initialize database')
 	.option('-c, --config <file>', 'key=value configuration file')
+	.option('-w, --wallet <file>', 'wally wallet, encrypted JSON')
 	.parse(process.argv);
 
 var logger = new (winston.Logger)({
@@ -39,11 +41,19 @@ if (cfg.log)
 var db_fn = cfg.db || 'serverd.db';
 var sslkey_fn = cfg.ssl_key || 'server.key';
 var sslcert_fn = cfg.ssl_cert || 'server.cert';
+var walletdb_fn = program.wallet || 'server.wallet';
+
+// Empty wallet defaults
+var wallet = new Wallet();
+wallet.datastore.client = 'serverd';
+wallet.datastore.client_version = VERSION;
+wallet.datastore.network = 'livenet';
 
 var httpsrv = undefined;
 var admsrv = undefined;
 var db = undefined;
 var rpc = undefined;
+var network = undefined;
 
 function stop_all()
 {
@@ -58,11 +68,26 @@ function dbWriteSync()
 	var tmpFn = db_fn + ".tmp";
 	EncFile.writeJFileSync(ENC_METHOD, process.env.SERVERD, tmpFn, db);
 	fs.renameSync(tmpFn, db_fn);
+
+	try {
+		wallet.writeSync(walletdb_fn, process.env.SERVERD);
+	} catch(e) {
+		console.error("Failed to write wallet: " + e);
+	}
 }
 
 function cmdChannelOpen(req)
 {
-	return jrpcServer.err(req, -99, 'not implemented yet');
+	var newKey = new WalletKey({network: network});
+	newKey.generate();
+
+	var obj = newKey.storeObj();
+	wallet.addKey(obj);
+
+	dbWriteSync();
+
+	var result = { "pubkey": obj.pub };
+	return jrpcServer.ok(req, result);
 }
 
 function cmdChannelSetRefund(req)
@@ -182,8 +207,12 @@ function read_db()
 		};
 
 		dbWriteSync();
-	} else
+	} else {
 		db = EncFile.readJFileSync(ENC_METHOD, process.env.SERVERD, db_fn);
+		wallet.readSync(walletdb_fn, process.env.SERVERD);
+		wallet.setNetwork(wallet.datastore.network);
+		network = wallet.network;
+	}
 }
 
 function main()
