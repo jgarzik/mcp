@@ -8,3 +8,5 @@ server.key
 server.key.org
 server.csr
 
+server.wallet
+
