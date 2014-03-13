@@ -2,17 +2,17 @@
 
 var fs = require('fs');
 var program = require('commander');
-var EncFile = require('libcoin/util/EncFile');
-var timeUtil = require('libcoin/util/time');
-var coinUtil = require('libcoin/util/util');
-var Transaction = require('libcoin/Transaction').class();
-var Parser = require('libcoin/util/BinaryParser').class();
+var EncFile = require('bitcore/util/EncFile');
+var timeUtil = require('bitcore/util/time');
+var coinUtil = require('bitcore/util/util');
+var Transaction = require('bitcore/Transaction').class();
+var Parser = require('bitcore/util/BinaryParser').class();
 var jrpcServer = require('../jrpcServer');
 var kvfile = require('../kvfile');
 var winston = require('winston');
-var RpcClient = require('libcoin/RpcClient').class();
-var Script = require('libcoin/Script').class();
-var Address = require('libcoin/Address').class();
+var RpcClient = require('bitcore/RpcClient').class();
+var Script = require('bitcore/Script').class();
+var Address = require('bitcore/Address').class();
 
 var VERSION = '0.0.1';
 var ENC_METHOD = 'aes-256-cbc';
@@ -28,23 +28,18 @@ var logger = new (winston.Logger)({
 		new (winston.transports.Console)({ timestamp: true }),
 	],
 });
-var cfg_fn = program.config || 'auctiond.cfg';
+var cfg_fn = program.config || 'serverd.cfg';
 var cfg = kvfile.readSync(cfg_fn);
 if (cfg.log)
 	logger.add(winston.transports.File, { 
 		filename: cfg.log,
 		timestamps: true,
 	});
-var db_fn = cfg.db || 'auctiond.db';
+
+var db_fn = cfg.db || 'serverd.db';
 var sslkey_fn = cfg.ssl_key || 'server.key';
 var sslcert_fn = cfg.ssl_cert || 'server.cert';
-var feeInfo = {
-	sweep_account: cfg.fee_account || 'auctionfees',
-	account_prefix: cfg.nonce_prefix || 'nonce-',
-	price_FPSB: cfg.fee_FPSB || 50000,
-	expiration: cfg.nonce_expiration || 2000,
-	n_confirm: cfg.fee_confirms || 1,
-};
+
 var httpsrv = undefined;
 var admsrv = undefined;
 var db = undefined;
@@ -61,302 +56,8 @@ function stop_all()
 function dbWriteSync()
 {
 	var tmpFn = db_fn + ".tmp";
-	EncFile.writeJFileSync(ENC_METHOD, process.env.AUCTIOND, tmpFn, db);
+	EncFile.writeJFileSync(ENC_METHOD, process.env.SERVERD, tmpFn, db);
 	fs.renameSync(tmpFn, db_fn);
-}
-
-function getTxOut(nonce)
-{
-	var account = feeInfo.account_prefix + nonce;
-	var addrStr = rpc.getAccountAddress(account);
-	var addr = new Address(addrStr);
-	var pubkeyhash = addr.payload();
-	var script = Script.createPubKeyHashOut(pubkeyhash);
-	script.updateBuffer();
-	return script.getBuffer();
-}
-
-function checkFeePaid(nonceObj)
-{
-	if (feeInfo.price_FPSB == 0)
-		return true;
-
-	var account = feeInfo.account_prefix + nonceObj.nonce;
-	var balanceDec = rpc.getBalance(account, feeInfo.n_confirm);
-	var balance = coinUtil.parseValue(balanceDec);
-	return balance.ge(feeInfo.price_FPSB);		// balance >= price ?
-}
-
-function cmdAuctionPrep(req)
-{
-	var params = req.params[0];
-	if (!('userid' in params) ||
-	    !('type' in params))
-		return jrpcServer.err(req, -10, 'missing params');
-
-	if (params.type != 'first-price-sealed-bid')
-		return jrpcServer.err(req, -11, 'invalid auction type');
-
-	var nonce = db.next_nonce;
-	db.next_nonce += 1;
-
-	// create database nonce object
-	var nonceObj = {
-		userid: params.userid,
-		type: params.type,
-		expires: timeUtil.curtime() + feeInfo.expiration,
-		price: feeInfo.price_FPSB,
-		nonce: nonce,
-		n_confirm: feeInfo.n_confirm,
-	};
-	if (feeInfo.price_FPSB > 0)
-		nonceObj.txout = getTxOut(nonce).toString('hex');
-
-	// save in db
-	db.pending_nonce[nonce] = nonceObj;
-
-	// write entire db to disk
-	dbWriteSync();
-
-	// remove from db after expiration
-	// WARNING: payment after expiration must be handled manually
-	// db update is lazy, postponed until next unrelated event
-	// triggers db update
-	setTimeout(function() {
-		delete db.pending_nonce[nonce];
-	}, feeInfo.expiration * 1000);
-
-	var rpcResult = {
-		price: nonceObj.price,
-		"price.expires": nonceObj.expires,
-		nonce: nonce,
-		n_confirm: nonceObj.n_confirm,
-	};
-	if ('txout' in nonceObj)
-		rpcResult["server.txout"] = nonceObj.txout;
-
-	return jrpcServer.ok(req, rpcResult);
-}
-
-function outptSerialize(hashStr, indexStr)
-{
-	var outpt = new Buffer(36);
-	var inputHash = new Buffer(hashStr, 'hex');
-	inputHash.copy(outpt);
-	outpt.writeUInt32LE(indexStr, 32);
-
-	return outpt;
-}
-
-var reDigits = /^\d+$/;
-var reHex = /^[\da-fA-F]+$/;
-
-function cmdAuctionCreate(req)
-{
-	var params = req.params[0];
-	if (!('nonce' in params) ||
-	    !('bid.input.hash' in params) ||
-	    !('bid.input.n' in params) ||
-	    !('bid.txout' in params) ||
-	    !('expires' in params) ||
-	    !('expires.lock' in params))
-		return jrpcServer.err(req, -20, 'missing params');
-	if (!reDigits.test(params.nonce) ||
-	    !reHex.test(params["bid.input.hash"]) ||
-	    (params["bid.input.hash"].length != 64) ||
-	    !reDigits.test(params["bid.input.n"]) ||
-	    !reHex.test(params["bid.txout"]) ||
-	    !reDigits.test(params.expires))
-		return jrpcServer.err(req, -21, 'invalid params');
-
-	var nonceObj = db.pending_nonce[params.nonce];
-	if (!nonceObj)
-		return jrpcServer.err(req, -22, 'unknown/expired nonce');
-
-	if (!checkFeePaid(nonceObj))
-		return jrpcServer.err(req, -24, 'auction payment not yet received and confirmed');
-
-	var outpt = outptSerialize(params["bid.input.hash"],
-				   params["bid.input.n"]);
-
-	var hash = coinUtil.twoSha256(outpt);
-	var hashStr = hash.toString('hex');
-	if (hashStr in db.auctions)
-		return jrpcServer.err(req, -23, 'outpoint matches existing auction');
-
-	var auctionObj = {
-		active: true,
-		creator: nonceObj.userid,
-		type: nonceObj.type,
-		created: timeUtil.curtime(),
-		outptHash: params["bid.input.hash"],
-		outptN: params["bid.input.n"],
-		txout: params["bid.txout"],
-		expires: params.expires,
-		expiresLock: params["expires.lock"],
-		bids: {},
-	};
-
-	db.auctions[hashStr] = auctionObj;
-
-	// write entire db to disk
-	dbWriteSync();
-
-	setTimeout(function() {
-		auctionObj.active = false;
-	}, (auctionObj.expires - timeUtil.curtime()));
-
-	var rpcResult = {
-		id: hashStr,
-	};
-
-	return jrpcServer.ok(req, rpcResult);
-}
-
-function cmdAuctionBidInfo(req)
-{
-	var params = req.params[0];
-	if (!('id' in params))
-		return jrpcServer.err(req, -30, 'missing params');
-
-	var auctionObj = db.auctions[params.id];
-	if (!auctionObj)
-		return jrpcServer.err(req, -31, 'unknown auction');
-	if (!auctionObj.active)
-		return jrpcServer.err(req, -32, 'closed auction');
-
-	var nlocktime = auctionObj.expiresLock ? auctionObj.expires : 0;
-	var rpcResult = {
-		"bid.input.hash": auctionObj.outptHash,
-		"bid.input.n": auctionObj.outptN,
-		"bid.txout": auctionObj.txout,
-		"bid.nlocktime": nlocktime,
-	};
-
-	return jrpcServer.ok(req, rpcResult);
-}
-
-function haveUnspent(outptHash, outptN)
-{
-	var txout = rpc.getTxOut(formatHashFull(outptHash), outptN);
-	if (!txout)
-		return false;
-	
-	return (txout.confirmations > 0) ? true : false;
-}
-
-function checkBidTx(auctionObj, txHex)
-{
-	var txRaw = new Buffer(txHex, 'hex');
-	var parser = new Parser(txRaw);
-	var tx = new Transaction();
-
-	// de-serialize TX
-	try {
-		tx.parse(parser);
-	} catch(e) {
-		return false;
-	}
-
-	// verify that one input matches our required input
-	var outpt = outptSerialize(auctionObj.outptHash, auctionObj.outptN);
-	var outptStr = outpt.toString('binary');
-
-	var inIdx = -1;
-	for (var i = 0; i < tx.ins.length; i++) {
-		if (tx.ins[i].o.toString('binary') == outptStr)
-			inIdx = i;
-
-		if (!haveUnspent(tx.ins[i].getOutpointHash(),
-			         tx.ins[i].getOutpointIndex()))
-			return false;
-	}
-	if (inIdx < 0)
-		return false;
-
-	// FIXME: validate signatures of other inputs
-
-	// validate nlocktime
-	var match = false;
-	if (auctionObj.expiresLock)
-		match = (tx.lock_time == auctionObj.expires);
-	else
-		match = (tx.lock_time == 0);
-	if (!match)
-		return false;
-
-	// verify that one output matches our required txout
-	var txout = new Buffer(auctionObj.txout, 'hex');
-	var txoutStr = txout.toString('binary');
-
-	match = false;
-	for (var i = 0; i < tx.outs.length; i++) {
-		if (tx.outs[i].s.toString('binary') == txoutStr) {
-			match = true;
-			break;
-		}
-	}
-	if (!match)
-		return false;
-
-	return true;
-}
-
-function cmdAuctionBid(req)
-{
-	var params = req.params[0];
-	if (!('id' in params) ||
-	    !('bidder' in params) ||
-	    !('tx' in params))
-		return jrpcServer.err(req, -40, 'missing params');
-	if (!reHex.test(params.tx))
-		return jrpcServer.err(req, -41, 'invalid params');
-
-	var auctionObj = db.auctions[params.id];
-	if (!auctionObj)
-		return jrpcServer.err(req, -42, 'unknown auction');
-	if ((!auctionObj.active) ||
-	    (timeUtil.curtime() >= auctionObj.expires))
-		return jrpcServer.err(req, -44, 'closed auction');
-
-	if (!checkBidTx(auctionObj, params.tx))
-		return jrpcServer.err(req, -43, 'invalid bid tx');
-
-	var bidObj = {
-		bidder: params.bidder,
-		tx: params.tx,
-	};
-
-	auctionObj.bids[params.bidder] = bidObj;
-
-	// write entire db to disk
-	dbWriteSync();
-
-	return jrpcServer.ok(req, true);
-}
-
-function cmdAuctionInfo(req)
-{
-	var params = req.params[0];
-	if (!('id' in params))
-		return jrpcServer.err(req, -30, 'missing params');
-
-	var auctionObj = db.auctions[params.id];
-	if (!auctionObj)
-		return jrpcServer.err(req, -31, 'unknown auction');
-
-	var rpcResult = {
-		active: auctionObj.active,
-		expires: auctionObj.expires,
-		"bid.count": Object.keys(auctionObj.bids).length,
-	};
-	if ('winner' in auctionObj) {
-		rpcResult.winner = auctionObj.winner;
-		if ('winnerTx' in auctionObj)
-			rpcResult["winner.tx"] = auctionObj.winnerTx;
-	}
-
-	return jrpcServer.ok(req, rpcResult);
 }
 
 function handle_jsonrpc(req)
@@ -432,26 +133,21 @@ function read_db()
 	if (program.init) {
 		db = {
 			created: {
-				app:		'auctiond',
+				app:		'serverd',
 				version:	VERSION,
 				time:		timeUtil.curtime(),
 			},
-
-			next_nonce: 1,
-			pending_nonce: {},
-
-			auctions: {},
 		};
 
 		dbWriteSync();
 	} else
-		db = EncFile.readJFileSync(ENC_METHOD, process.env.AUCTIOND, db_fn);
+		db = EncFile.readJFileSync(ENC_METHOD, process.env.SERVERD, db_fn);
 }
 
 function main()
 {
-	if (!process.env.AUCTIOND) {
-		console.error("AUCTIOND environment variable must be set to DB passphrase");
+	if (!process.env.SERVERD) {
+		console.error("SERVERD environment variable must be set to DB passphrase");
 		return;
 	}
 
