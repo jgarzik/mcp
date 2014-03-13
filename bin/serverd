@@ -213,6 +213,7 @@ function cmdChannelSetRefund(req)
 	var sigType = new Buffer(1);
 	sigType[0] = Transaction.SIGHASH_ALL;
 	var sig = Buffer.concat([sigRaw, sigType]);
+	var sigHex = bufferstools.toHex(sig);
 
 	// update database
 	channel.remotePubkey = params.pubkey;
@@ -221,9 +222,113 @@ function cmdChannelSetRefund(req)
 	dbWriteSync();
 
 	var result = {
-		"signature": buffertools.toHex(signature),
+		"signature": sigHex,
 	};
 	return jrpcServer.ok(req, result);
+}
+
+function matchScript(scriptBuf, k1, k2)
+{
+	var script = new Script(scriptBuf);
+	return (script.chunks.length == 5 &&
+		script.chunk2[0] == OP_2 &&
+		Buffer.isBuffer(script.chunks[1]) &&
+		Buffer.isBuffer(script.chunks[2]) &&
+		script.chunk[3] == OP_2 &&
+		script.chunk[4] == OP_CHECKMULTISIG &&
+		script.chunks[1].toString() == k1.toString() &&
+		script.chunks[2].toString() == k2.toString());
+}
+
+function validCommitTx(tx, k1, k2)
+{
+	var match = -1;
+	for (var i = 0; i < tx.outs.length; i++)
+		if (matchScript(tx.outs[i].s, k1, k2))
+			match = i;
+	if (match < 0)
+		return { result: false };
+
+	var curtime = new Date();
+	if (tx.lock_time > curtime.getTime())
+		return { result: false };
+
+	return { result: true, idx: match };
+}
+
+function findTxOutpt(tx, outpt)
+{
+	var hashStr = outpt.hash.toString();
+	for (var i = 0; i < tx.ins.length; i++) {
+		var txin = tx.ins[i];
+		if ((txin.getOutpointIndex() == outpt.n) &&
+		    (txin.getOutpointHash().toString() == hashStr))
+			return i;
+	}
+
+	return -1;
+}
+
+function findOutByAddr(tx, pkh)
+{
+	var pkhStr = pkh.toString();
+	for (var i = 0; i < tx.outs.length; i++) {
+		var txout = tx.outs[i];
+		var script = new Script(txout.s);
+		if (script.isPubkeyHash() &&
+		    script.chunks[2].toString() == pkhStr)
+			return i;
+	}
+
+	return -1;
+}
+
+function validFirstPay(channel, ctxInfo, txCommit, txFirstPay,
+		       channelKey, remotePubkey)
+{
+	// ensure txFirstPay is connected to txCommit's matched output
+	var outpt = { hash: txCommit.getHash(), n: ctxInfo.idx };
+	var inIdx = findTxOutpt(txFirstPay, outpt);
+	if (inIdx < 0)
+		return { result: false };
+
+	var txin = txFirstPay.ins[inIdx];
+	if (txin.q > 0xffffff)
+		return { result: false };
+	
+	var scriptSig = new Script(txin.s);
+	if (scriptSig.chunks.length != 2)
+		return { result: false };
+
+	// locate the outputs directed to us, and to the client
+	var cliOutIdx = findOutByAddr(txFirstPay, remotePubkey.public);
+	var srvOutIdx = findOutByAddr(txFirstPay, channelKey.public);
+	if ((cliOutIdx < 0) || (srvOutIdx < 0))
+		return { result: false };
+		
+	var val_in = coinUtil.valueToBigInt(txCommit.outs[ctxInfo.idx].v);
+	var val_cli = coinUtil.valueToBigInt(txfirstPay.outs[cliOutIdx].v);
+	var val_srv = coinUtil.valueToBigInt(txfirstPay.outs[srvOutIdx].v);
+	var fee = bignum(10000);
+
+	var val_out = val_cli.add(val_srv);
+	val_out = val_out.add(fee);
+
+	if (val_in.lt(val_out))
+		return { result: false };
+
+	// FIXME: check client signature
+
+	return {
+		result: true,
+		inIdx: inIdx,
+		cliOutIdx: cliOutIdx,
+		srvOutIdx: srvOutIdx,
+		val_in: val_in.toString(),
+		val_cli: val_cli.toString(),
+		val_srv: val_srv.toString(),
+		fee: fee.toString(),
+	};
 }
 
 function cmdChannelCommit(req)
@@ -231,7 +336,8 @@ function cmdChannelCommit(req)
 	// load and validate params
 	var params = req.params[0];
 	if (!('channel.id' in params) ||
-	    !('tx' in params))
+	    !('tx.commit' in params) ||
+	    !('tx.firstPayment' in params))
 		return jrpcServer.err(req, -10, 'missing params');
 
 	var channelId = params["channel.id"];
@@ -240,36 +346,89 @@ function cmdChannelCommit(req)
 		return jrpcServer.err(req, -10, 'invalid channel id');
 	if (channel.state != 'signedRefund')
 		return jrpcServer.err(req, -12, 'invalid channel state');
-	var tx = decodeHexTx(params.tx);
-	if (!tx)
+	var channelKey = loadChannelKey(channel.id);
+	if (!channelKey)
+		return jrpcServer.err(req, -22, 'internal server error');
+	var remotePubkey = decodePubkey(channel.remotePubkey);
+	if (!remotePubkey)
+		return jrpcServer.err(req, -23, 'internal server error');
+
+	var txCommit = decodeHexTx(params["tx.commit"]);
+	if (!txCommit)
 		return jrpcServer.err(req, -15, 'transaction decode failed');
 
-	// TODO FIXME
+	var txFirstPay = decodeHexTx(params["tx.firstPayment"]);
+	if (!txFirstPay)
+		return jrpcServer.err(req, -15, 'transaction 2 decode failed');
 
-	return jrpcServer.err(req, -99, 'not implemented yet');
+	var ctxInfo = validCommitTx(txCommit,
+				    remotePubkey.public, channelKey.public);
+	if (!ctxInfo.result)
+		return jrpcServer.err(req, -31, 'commit tx invalid');
+
+	var ptxInfo = validFirstPay(channel, ctxInfo, txCommit, txFirstPay,
+				    channelKey, remotePubkey);
+	if (!ptxInfo.result)
+		return jrpcServer.err(req, -31, 'firstPayment tx invalid');
+
+	// FIXME: broadcast txCommit, once validated
+
+	channel.txCommit = params["tx.commit"];
+	channel.txFirstPayment = params["tx.firstPayment"];
+	channel.txLastPayment = params["tx.firstPayment"];
+	channel.inIdx = ptxInfo.inIdx;
+	channel.cliOutIdx = ptxInfo.cliOutIdx;
+	channel.srvOutIdx = ptxInfo.srvOutIdx;
+	channel.val_in = ptxInfo.val_in;
+	channel.val_cli = ptxInfo.val_cli;
+	channel.val_srv = ptxInfo.val_srv;
+	channel.fee = ptxInfo.fee;
+	dbWriteSync();
+
+	var result = true;
+	return jrpcServer.ok(req, result);
 }
 
-function cmdChannelSetPayment(req)
+function updatePayTx(channel, sigRaw, amount)
 {
-	// load and validate params
-	var params = req.params[0];
-	if (!('channel.id' in params) ||
-	    !('tx' in params))
-		return jrpcServer.err(req, -10, 'missing params');
+	// move value cli -> srv
+	var val_cli = bignum(channel.val_cli);
+	val_cli = val_cli.sub(amount);
+	var val_srv = bignum(channel.val_srv);
+	val_srv = val_srv.add(amount);
 
-	var channelId = params["channel.id"];
-	var channel = db.channels[channelId];
-	if (!channel)
-		return jrpcServer.err(req, -10, 'invalid channel id');
-	if (channel.state != 'commit')
-		return jrpcServer.err(req, -12, 'invalid channel state');
-	var tx = decodeHexTx(params.tx);
-	if (!tx)
-		return jrpcServer.err(req, -15, 'transaction decode failed');
+	var buf = new Buffer(channel.txLastPayment, 'hex');
+	var tx = new Transaction();
+	tx.parse(txbuf);
 
-	// TODO FIXME
+	var txin = tx.ins[channel.inIdx];
 
-	return jrpcServer.err(req, -99, 'not implemented yet');
+	// update input sequence number
+	txin.q++;
+
+	// update signature in scriptSig
+	var scriptSig = new Script(txin.s);
+	scriptSig.chunks[0] = sigRaw;
+
+	// reduce client's output
+	var txout = tx.outs[channel.cliOutIdx];
+	txout.v = coinUtil.bigIntToValue(val_cli);
+
+	// increase server's output
+	var txout = tx.outs[channel.srvOutIdx];
+	txout.v = coinUtil.bigIntToValue(val_srv);
+
+	// FIXME: verify updated signature
+	if (0)
+		return false;
+
+	// store updated payment TX
+	channel.txLastPayment = buffertools.toHex(tx.serialize());
+	channel.val_cli = val_cli.toString();
+	channel.val_srv = val_srv.toString();
+	dbWriteSync();
+
+	return true;
 }
 
 function cmdChannelPay(req)
@@ -288,9 +447,21 @@ function cmdChannelPay(req)
 	if (channel.state != 'active')
 		return jrpcServer.err(req, -12, 'invalid channel state');
 
-	// TODO FIXME
+	var sigRaw = new Buffer(params.signature, 'hex');
+	if (!sigRaw || (sigRaw.length < 32) || (sigRaw.length > 128))
+		return jrpcServer.err(req, -41, 'invalid signature fmt');
 
-	return jrpcServer.err(req, -99, 'not implemented yet');
+	var amount = parseInt(params.amount);
+	if (!amount || (amount < 0))
+		return jrpcServer.err(req, -42, 'invalid amount');
+	if (amount > channel.val_cli)
+		return jrpcServer.err(req, -43, 'insufficient funds');
+
+	if (!updatePayTx(channel, sigRaw, amount))
+		return jrpcServer.err(req, -44, 'payment failed');
+
+	var result = true;
+	return jrpcServer.ok(req, result);
 }
 
 function handle_jsonrpc(req)
@@ -307,8 +478,6 @@ function handle_jsonrpc(req)
 		return cmdChannelSetRefund(req);
 	case "channel.commit":
 		return cmdChannelCommit(req);
-	case "channel.setPayment":
-		return cmdChannelSetPayment(req);
 	case "channel.pay":
 		return cmdChannelPay(req);
 
