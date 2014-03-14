@@ -4,14 +4,31 @@ var fs = require('fs');
 var program = require('commander');
 var rpc = require('../jrpcClient');
 var Address = require('bitcore/Address');
+var Wallet = require('bitcore/Wallet');
+var WalletKey = require('bitcore/WalletKey');
+var Script = require('bitcore/Script');
+var KeyModule = require('bitcore/Key');
+var coinUtil = require('bitcore/util/util');
 
 var VERSION = '0.0.1';
+
+// Empty wallet defaults
+var wallet = new Wallet();
+wallet.datastore.client = 'servercli';
+wallet.datastore.client_version = VERSION;
+wallet.datastore.network = 'testnet';
+
+var network = undefined;
 
 program
 	.version(VERSION)
 	.option('--host <hostname>', 'Remote hostname of server to contact')
 	.option('--port <n>', 'Remote port of server to contact')
+	.option('--wallet <file>', 'Filename of wallet')
+	.option('--livenet', 'Use livenet (default: testnet)')
 	.parse(process.argv);
+
+var wallet_fn = program.wallet || 'servercli.wallet';
 
 var rpc_opts = {
 	hostname: program.host || 'localhost',
@@ -21,6 +38,7 @@ var rpc_opts = {
 function list_commands()
 {
 	var s = "servercli command summary:\n";
+	s += "init\t\tInit state db\n";
 	s += "open\t\tOpen channel\n";
 	s += "setRefund CHANNEL-ID PUBKEY TX TXIN-IDX\tSet hex-encoded refund transaction\n";
 	s += "commit CHANNEL-ID TX\tCommit funds to channel\n";
@@ -29,13 +47,54 @@ function list_commands()
 	console.log(s);
 }
 
+function cmd_open_cb(result)
+{
+	if (!('channels' in wallet.datastore))
+		wallet.datastore.channels = {};
+
+	// generate K1
+	var wK1 = new WalletKey({network: network});
+	wK1.generate();
+	var k1_obj = wK1.storeObj();
+	wallet.addKey(k1_obj);
+
+	// returned result forms basis of our local channel object
+	var channelObj = result;
+
+	// convert K2 to a channel id (bitcoin address)
+	var k2_pubkeyBuf = new Buffer(channelObj.pubkey, 'hex');
+	var k2_pubkey = new KeyModule.Key();
+	k2_pubkey.public = k2_pubkeyBuf;
+	var pubKeyHash = coinUtil.sha256ripe160(k2_pubkeyBuf);
+	var addr = new Address(network.addressPubkey, pubKeyHash);
+	var channelId = addr.as('base58');
+	channelObj.id = channelId;
+
+	// create multisig address for this transaction
+	var script = Script.createMultisig(2, [
+		wK1.privKey.public, k2_pubkey.public]);
+	var msigAddrStr = wallet.addScript(script);
+
+	channelObj.t1_output = msigAddrStr;
+	channelObj.k1_addr = k1_obj.addr;
+
+	// add channel to wallet
+	wallet.datastore.channels[channelId] = channelObj;
+
+	write_wallet();
+
+	console.log("Payment channel " + channelId + " opened.");
+	console.log("Create and sign BUT DO NOT BROADCAST a transaction to " +
+		    msigAddrStr);
+}
+
 function cmd_open()
 {
 	rpc.call('channel.open', [{}], rpc_opts, function(err, result) {
 		if (err)
 			console.log("channel.open failed: " + err.message);
 		else
-			console.dir(result);
+			cmd_open_cb(result);
 	});
 }
 
@@ -88,8 +147,57 @@ function cmd_pay(channelId, signature, amount)
 	});
 }
 
+function set_network(netname)
+{
+	wallet.setNetwork(netname);
+	network = wallet.network;
+}
+
+function write_wallet()
+{
+	try {
+		wallet.writeSync(wallet_fn, process.env.SERVERCLI);
+	} catch(e) {
+		console.error("Failed to write wallet: " + e);
+		process.exit(1);
+	}
+}
+
+function read_wallet()
+{
+	try {
+		wallet.readSync(wallet_fn, process.env.SERVERCLI);
+		set_network(wallet.datastore.network);
+	} catch(e) {
+		console.error("Failed to read wallet: " + e);
+		process.exit(1);
+	}
+}
+
+function cmd_init()
+{
+	if (program.livenet)
+		set_network('livenet');
+	else
+		set_network('testnet');
+
+	if (fs.existsSync(wallet_fn))
+		read_wallet();
+
+	write_wallet();
+}
+
+function dump_wallet()
+{
+	console.dir(wallet.datastore);
+}
+
 function main()
 {
+	if (!process.env.SERVERCLI) {
+		console.error("SERVERCLI passphrase must be set.");
+		return;
+	}
 	if (program.args.length == 0) {
 		console.error("No command specified.");
 		list_commands();
@@ -97,12 +205,23 @@ function main()
 	}
 
 	var cmd = program.args[0];
+
+	if (cmd != "init")
+		read_wallet();
 	
 	switch (cmd) {
 
 	default:
 		console.error("Unknown command", cmd);
 		// fall through
+
+	case "init":
+		cmd_init();
+		break;
+
+	case "dump":
+		dump_wallet();
+		break;
 
 	case "open":
 		cmd_open();
