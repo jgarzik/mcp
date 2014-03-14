@@ -210,8 +210,6 @@ function cmdChannelSetRefund(req)
 	// build scriptPubKey according to standard protocol
 	var k1 = remotePubkey.public;
 	var k2 = channelKey.public;
-	console.dir(k1);
-	console.dir(k2);
 	var scriptPubKey = Script.createMultisig(2, [k1, k2]);
 
 	// sign T1, paying to T2, without having ever seen T1
