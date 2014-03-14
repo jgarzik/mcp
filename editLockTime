@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+
+var buffertools = require('buffertools');
+var Transaction = require('bitcore/Transaction');
+
+if (process.argv.length != 4) {
+	console.log("Usage: editLockTime rawtx locktime");
+	return;
+}
+
+var rawTx = new Buffer(process.argv[2], 'hex');
+var locktime = parseInt(process.argv[3]);
+
+var tx = new Transaction();
+tx.parse(rawTx);
+tx.lock_time = locktime;
+
+console.log(buffertools.toHex(tx.serialize()));
+

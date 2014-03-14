@@ -13,7 +13,7 @@ program
 
 var rpc_opts = {
 	hostname: program.host || 'localhost',
-	port: program.port || 12883,
+	port: program.port || 13883,
 };
 
 function list_commands()

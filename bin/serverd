@@ -14,6 +14,9 @@ var RpcClient = require('bitcore/RpcClient');
 var Script = require('bitcore/Script');
 var Address = require('bitcore/Address');
 var Wallet = require('bitcore/Wallet');
+var WalletKey = require('bitcore/WalletKey');
+var KeyModule = require('bitcore/Key');
+var buffertools = require('buffertools');
 
 var VERSION = '0.0.1';
 var ENC_METHOD = 'aes-256-cbc';
@@ -43,14 +46,14 @@ var sslkey_fn = cfg.ssl_key || 'server.key';
 var sslcert_fn = cfg.ssl_cert || 'server.cert';
 var walletdb_fn = cfg.wallet || 'server.wallet';
 var timelock_min = parseInt(cfg.timelock_min) || 3600;
-var timelock_max = parseInt(cfg.timelock_max) || (3600 * 24);
-var timelock_prefer = parseInt(cfg.timelock_prefer) || (3600 * 24 * 7);
+var timelock_max = parseInt(cfg.timelock_max) || (3600 * 24 * 7);
+var timelock_prefer = parseInt(cfg.timelock_prefer) || (3600 * 24);
 
 // Empty wallet defaults
 var wallet = new Wallet();
 wallet.datastore.client = 'serverd';
 wallet.datastore.client_version = VERSION;
-wallet.datastore.network = 'livenet';
+wallet.datastore.network = 'testnet';
 
 var httpsrv = undefined;
 var admsrv = undefined;
@@ -87,7 +90,7 @@ function decodeHexTx(hexStr)
 	if ((hexStr.length % 2) == 1)
 		return undefined;
 
-	var buf = new Buffer(hexStr, 'hex');
+	var txbuf = new Buffer(hexStr, 'hex');
 	var tx = new Transaction();
 	tx.parse(txbuf);
 
@@ -99,7 +102,7 @@ function decodePubkey(hexStr)
 	var buf = new Buffer(hexStr, 'hex');
 	if (!buf)
 		return undefined;
-	var key = new Key();
+	var key = new KeyModule.Key();
 	key.public = buf;
 
 	return key;
@@ -107,15 +110,15 @@ function decodePubkey(hexStr)
 
 function loadChannelKey(channelIdStr)
 {
-	var channelId = new Buffer(channelIdStr, 'hex');
-	var keyObj = wallet.findKeyHash(channelId);
+	var channelAddr = new Address(channelIdStr);
+	var keyObj = wallet.findKeyHash(channelAddr.payload());
 	if (!keyObj)
 		return undefined;
 
 	var key = new WalletKey({network: network});
 	key.fromObj(keyObj);
 
-	return key;
+	return key.privKey;
 }
 
 function cmdChannelOpen(req)
@@ -156,8 +159,10 @@ function validRefundTx(channel, tx)
 {
 	// must be within permitted time window
 	var birthday = channel.created;
-	if ((tx.lock_time < (birthday + timelock_min)) ||
-	    (tx.lock_time > (birthday + timelock_max)))
+	var lock_time_min = birthday + timelock_min;
+	var lock_time_max = birthday + timelock_max;
+	if ((tx.lock_time < lock_time_min) ||
+	    (tx.lock_time > lock_time_max))
 		return false;
 
 	// any number of inputs or outputs
@@ -198,22 +203,25 @@ function cmdChannelSetRefund(req)
 		return jrpcServer.err(req, -21, 'invalid refund transaction');
 	
 	var inIdx = parseInt(params.txInIdx);
-	if (!inIdx || (inIdx < 0) || (inIdx >= tx.ins.length))
-		return jrpcServer.err(req, -21, 'invalid TX input');
+	if ((inIdx == NaN) || (inIdx < 0) || (inIdx >= tx.ins.length))
+		return jrpcServer.err(req, -21,
+				      'invalid TX input ' + inIdx.toString());
 
 	// build scriptPubKey according to standard protocol
 	var k1 = remotePubkey.public;
 	var k2 = channelKey.public;
+	console.dir(k1);
+	console.dir(k2);
 	var scriptPubKey = Script.createMultisig(2, [k1, k2]);
 
 	// sign T1, paying to T2, without having ever seen T1
 	var txSigHash = tx.hashForSignature(scriptPubKey, inIdx,
 					    Transaction.SIGHASH_ALL);
-	var sigRaw = channelKey.privKey.signSync(txSigHash);
+	var sigRaw = channelKey.signSync(txSigHash);
 	var sigType = new Buffer(1);
 	sigType[0] = Transaction.SIGHASH_ALL;
 	var sig = Buffer.concat([sigRaw, sigType]);
-	var sigHex = bufferstools.toHex(sig);
+	var sigHex = buffertools.toHex(sig);
 
 	// update database
 	channel.remotePubkey = params.pubkey;
@@ -506,14 +514,14 @@ function start_http()
 	var opts = {
 		key: fs.readFileSync(sslkey_fn),
 		cert: fs.readFileSync(sslcert_fn),
-		port: cfg.port || 12882,
+		port: cfg.port || 13882,
 	};
 	httpsrv = jrpcServer.create(opts, handle_jsonrpc, logger, "http");
 
 	opts = {
 		key: fs.readFileSync(sslkey_fn),
 		cert: fs.readFileSync(sslcert_fn),
-		port: cfg.admin_port || 12883,
+		port: cfg.admin_port || 13883,
 	};
 	admsrv = jrpcServer.create(opts, handle_jsonrpc_admin, logger, "admin");
 

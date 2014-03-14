@@ -15,14 +15,14 @@ program
 
 var rpc_opts = {
 	hostname: program.host || 'localhost',
-	port: program.port || 12882,
+	port: program.port || 13882,
 };
 
 function list_commands()
 {
 	var s = "servercli command summary:\n";
 	s += "open\t\tOpen channel\n";
-	s += "setRefund CHANNEL-ID TX\tSet hex-encoded refund transaction\n";
+	s += "setRefund CHANNEL-ID PUBKEY TX TXIN-IDX\tSet hex-encoded refund transaction\n";
 	s += "commit CHANNEL-ID TX\tCommit funds to channel\n";
 	s += "setPayment CHANNEL-ID TX\tSet hex-encoded payment transaction template\n";
 	s += "pay CHANNEL-ID SIGNATURE AMOUNT\tMake a payment\n";
@@ -39,9 +39,14 @@ function cmd_open()
 	});
 }
 
-function cmd_setRefund(channelId, tx)
+function cmd_setRefund(channelId, pubkey, tx, txin_idx)
 {
-	rpc.call('channel.setRefund', [{ "channel.id": channelId, tx: tx }], rpc_opts, function(err, result) {
+	rpc.call('channel.setRefund', [{
+		"channel.id": channelId,
+		pubkey: pubkey,
+		tx: tx,
+		txInIdx: txin_idx,
+	}], rpc_opts, function(err, result) {
 		if (err)
 			console.log("channel.setRefund failed: " + err.message);
 		else
@@ -104,9 +109,10 @@ function main()
 		break;
 
 	case "setRefund":
-		if (program.args.length != 3)
-			throw new Error("Usage: setRefund channel-id tx");
-		cmd_setRefund(program.args[1], program.args[2]);
+		if (program.args.length != 5)
+			throw new Error("Usage: setRefund channel-id public tx txin_idx");
+		cmd_setRefund(program.args[1], program.args[2],
+			      program.args[3], program.args[4]);
 		break;
 
 	case "commit":
