@@ -7,6 +7,7 @@ var Address = require('bitcore/Address');
 var Wallet = require('bitcore/Wallet');
 var WalletKey = require('bitcore/WalletKey');
 var Script = require('bitcore/Script');
+var Transaction = require('bitcore/Transaction');
 var KeyModule = require('bitcore/Key');
 var coinUtil = require('bitcore/util/util');
 
@@ -38,8 +39,9 @@ var rpc_opts = {
 function list_commands()
 {
 	var s = "servercli command summary:\n";
-	s += "init\t\tInit state db\n";
+	s += "init\t\tInit wallet\n";
 	s += "open\t\tOpen channel\n";
+	s += "setCommit CHANNEL-ID TX\tSet hex-encoded fund-commit TX (T1)\n";
 	s += "setRefund CHANNEL-ID PUBKEY TX TXIN-IDX\tSet hex-encoded refund transaction\n";
 	s += "commit CHANNEL-ID TX\tCommit funds to channel\n";
 	s += "setPayment CHANNEL-ID TX\tSet hex-encoded payment transaction template\n";
@@ -96,6 +98,29 @@ function cmd_open()
 		else
 			cmd_open_cb(result);
 	});
+}
+
+function cmd_setCommit(channelId, txHex)
+{
+	var channelObj = wallet.datastore.channels[channelId];
+	if (!channelObj) {
+		console.error("Unknown payment channel");
+		process.exit(1);
+	}
+
+	var tx = new Transaction();
+	tx.parse(new Buffer(txHex, 'hex'));
+
+	if ((tx.lock_time > 0) ||
+	    (tx.ins.length < 1) ||
+	    (tx.outs.length < 1)) {
+		console.error("Invalid commit TX");
+		process.exit(1);
+	}
+
+	channelObj.t1 = txHex;
+
+	write_wallet();
 }
 
 function cmd_setRefund(channelId, pubkey, tx, txin_idx)
@@ -225,6 +250,12 @@ function main()
 
 	case "open":
 		cmd_open();
+		break;
+
+	case "setCommit":
+		if (program.args.length != 3)
+			throw new Error("Usage: setCommit channel-id tx");
+		cmd_setCommit(program.args[1], program.args[2]);
 		break;
 
 	case "setRefund":
