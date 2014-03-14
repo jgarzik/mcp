@@ -87,7 +87,7 @@ function cmd_open_cb(result)
 	write_wallet();
 
 	console.log("Payment channel " + channelId + " opened.");
-	console.log("Create and sign BUT DO NOT BROADCAST a transaction to " +
+	console.log("Create, sign, DO NOT BROADCAST transaction to " +
 		    msigAddrStr);
 }
 
@@ -122,6 +122,8 @@ function cmd_setCommit(channelId, txHex)
 	channelObj.t1 = txHex;
 
 	write_wallet();
+
+	console.log("Commit TX stored.");
 }
 
 function cmd_setRefund_cb(channelObj, refundTx, result)
@@ -144,6 +146,10 @@ function cmd_setRefund_cb(channelObj, refundTx, result)
 		console.error("Server refund TX bad signature");
 		process.exit(1);
 	}
+
+	// TODO: sign it ourselves!
+
+	console.log("Refund TX signed.  Ready to commit funds.");
 }
 
 function cmd_setRefund(channelId, pubkey, tx, txin_idx)
@@ -209,28 +215,39 @@ function cmd_setRefund(channelId, pubkey, tx, txin_idx)
 	});
 }
 
-function cmd_commit(channelId, tx)
+function cmd_commit_cb(channelObj, result)
 {
-	rpc.call('channel.commit', [{ "channel.id": channelId, tx: tx }], rpc_opts, function(err, result) {
+	channelObj.commit = true;
+	write_wallet();
+
+	console.log("Payment channel " + channelObj.id + " funds committed.");
+}
+
+function cmd_commit(channelId, firstPaymentVal)
+{
+	var channelObj = wallet.datastore.channels[channelId];
+	if (!channelObj) {
+		console.error("Unknown payment channel");
+		process.exit(1);
+	}
+
+	// TODO: build modified T3 containing first payment
+
+	rpc.call('channel.commit', [{
+		"channel.id": channelId,
+		tx: channgeObj.t1,
+	}], rpc_opts, function(err, result) {
 		if (err)
 			console.log("channel.commit failed: " + err.message);
 		else
-			console.dir(result);
+			cmd_commit_cb(channelObj, result);
 	});
 }
 
-function cmd_setPayment(channelId, tx)
+function cmd_pay(channelId, amount)
 {
-	rpc.call('channel.setPayment', [{ "channel.id": channelId, tx: tx }], rpc_opts, function(err, result) {
-		if (err)
-			console.log("channel.setPayment failed: " + err.message);
-		else
-			console.dir(result);
-	});
-}
+	// FIXME
 
-function cmd_pay(channelId, signature, amount)
-{
 	rpc.call('channel.pay', [{
 		"channel.id": channelId,
 		signature: signature,
@@ -338,20 +355,14 @@ function main()
 
 	case "commit":
 		if (program.args.length != 3)
-			throw new Error("Usage: commit channel-id tx");
+			throw new Error("Usage: commit channel-id first-payment-amount");
 		cmd_commit(program.args[1], program.args[2]);
 		break;
 
-	case "setPayment":
-		if (program.args.length != 3)
-			throw new Error("Usage: setPayment channel-id tx");
-		cmd_setPayment(program.args[1], program.args[2]);
-		break;
-
 	case "pay":
-		if (program.args.length != 4)
-			throw new Error("Usage: pay channel-id signature amount");
-		cmd_pay(program.args[1], program.args[2], program.args[3]);
+		if (program.args.length != 3)
+			throw new Error("Usage: pay channel-id amount");
+		cmd_pay(program.args[1], program.args[2]);
 		break;
 
 	case "help":
