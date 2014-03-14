@@ -10,6 +10,7 @@ var Script = require('bitcore/Script');
 var Transaction = require('bitcore/Transaction');
 var KeyModule = require('bitcore/Key');
 var coinUtil = require('bitcore/util/util');
+var buffertools = require('buffertools');
 
 var VERSION = '0.0.1';
 
@@ -123,18 +124,88 @@ function cmd_setCommit(channelId, txHex)
 	write_wallet();
 }
 
+function cmd_setRefund_cb(channelObj, refundTx, result)
+{
+	var sig = new Buffer(result.signature, 'hex');
+
+	// load K2
+	var k2_pubkeyBuf = new Buffer(channelObj.pubkey, 'hex');
+	var k2_pubkey = new KeyModule.Key();
+	k2_pubkey.public = k2_pubkeyBuf;
+
+	// load multisig script
+	var scriptHex = wallet.datastore.scripts[channelObj.t1_output];
+	var scriptPubKey = new Script(new Buffer(scriptHex, 'hex'));
+
+	// verify server signature for T2
+	var sigHash = refundTx.hashForSignature(scriptPubKey, 0,
+						Transaction.SIGHASH_ALL);
+	if (!k2_pubkey.verifySignatureSync(sigHash, sig)) {
+		console.error("Server refund TX bad signature");
+		process.exit(1);
+	}
+}
+
 function cmd_setRefund(channelId, pubkey, tx, txin_idx)
 {
+	var channelObj = wallet.datastore.channels[channelId];
+	if (!channelObj) {
+		console.error("Unknown payment channel");
+		process.exit(1);
+	}
+
+	// reference previously stored K1
+	var k1_addrStr = channelObj.k1_addr;
+	if (!k1_addrStr) {
+		console.error("Unknown payment channel K1 address");
+		process.exit(1);
+	}
+	var k1_addr = new Address(k1_addrStr);
+	var wK1 = new WalletKey({network: network});
+	wK1.fromObj(wallet.findAddress(k1_addrStr));
+
+	// reference previously stored T1
+	var commitTx = new Transaction();
+	commitTx.parse(new Buffer(channelObj.t1, 'hex'));
+
+	// build refund transaction, T2
+	var OUR_VOUT = 0;	// TODO: do not hardcode
+	var refundTx = new Transaction();
+	refundTx.version = 1;
+	refundTx.lock_time = channelObj["timelock.prefer"];
+
+	// T2 input 0: T1's output 0
+	var emptyScript = new Script();
+	var txin = new TransactionIn({
+		oTxHash: coinUtil.formatHashFull(commitTx.getHash()),
+		oIndex: OUR_VOUT,
+		script: emptyScript.getBuffer(),
+		sequence: 0xffffffff,
+	});
+	refundTx.ins.push(txin);
+
+	// T2 output 0: 100% to K1
+	var txout = new TransactionOut({
+		value: commitTx.outs[OUR_VOUT].v,
+		script: Script.createPubKeyHashOut(k1_addr.payload()),
+	});
+	refundTx.outs.push(txout);
+
+	var refundTxHex = buffertools.toHex(refundTx.serialize());
+
+	channelObj.refundTx = refundTxHex;
+	write_wallet();
+
 	rpc.call('channel.setRefund', [{
 		"channel.id": channelId,
-		pubkey: pubkey,
-		tx: tx,
-		txInIdx: txin_idx,
+		pubkey: buffertools.toHex(wK1.privKey.public),
+		tx: refundTxHex,
+		txInIdx: 0,
 	}], rpc_opts, function(err, result) {
 		if (err)
 			console.log("channel.setRefund failed: " + err.message);
 		else
-			console.dir(result);
+			cmd_setRefund_cb(channelObj, refundTx, result);
 	});
 }
 
