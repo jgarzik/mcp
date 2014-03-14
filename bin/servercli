@@ -45,7 +45,6 @@ function list_commands()
 	s += "setCommit CHANNEL-ID TX\tSet hex-encoded fund-commit TX (T1)\n";
 	s += "setRefund CHANNEL-ID PUBKEY TX TXIN-IDX\tSet hex-encoded refund transaction\n";
 	s += "commit CHANNEL-ID TX\tCommit funds to channel\n";
-	s += "setPayment CHANNEL-ID TX\tSet hex-encoded payment transaction template\n";
 	s += "pay CHANNEL-ID SIGNATURE AMOUNT\tMake a payment\n";
 	console.log(s);
 }
