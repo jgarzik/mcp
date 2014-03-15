@@ -175,33 +175,30 @@ function cmd_setRefund(channelId)
 
 	// build refund transaction, T2
 	var OUR_VOUT = 0;	// TODO: do not hardcode
-	var txTemplate = {
-		version: 1,
-		lock_time: channelObj["timelock.prefer"],
-		ins: [],
-		outs: [],
-	};
+	var refundTx = new Transaction();
+	refundTx.version = 1;
+	refundTx.lock_time = channelObj["timelock.prefer"];
 
 	// T2 input 0: T1's output 0
 	var commitTxHash = commitTx.getHash();
 	var outpt = new Buffer(32 + 4);
 	commitTxHash.copy(outpt);
 	outpt.writeUInt32LE(OUR_VOUT, 32);
-	var txin = {
+	var txin = new Transaction.In({
 		o: outpt,
-		s: coinUtil.EMPTY_BUFFER,
 		q: 0xffffffff,
-	};
-	txTemplate.ins.push(txin);
+	});
+	refundTx.ins.push(txin);
 
 	// T2 output 0: 100% to K1
-	var txout = {
+	var scriptOut = Script.createPubKeyHashOut(k1_addr.payload());
+	scriptOut.updateBuffer();
+	var txout = new Transaction.Out({
 		v: commitTx.outs[OUR_VOUT].v,
-		s: Script.createPubKeyHashOut(k1_addr.payload()),
-	};
-	txTemplate.outs.push(txout);
+		s: scriptOut.getBuffer(),
+	});
+	refundTx.outs.push(txout);
 
-	var refundTx = new Transaction(txTemplate);
 	var refundTxHex = buffertools.toHex(refundTx.serialize());
 
 	channelObj.refundTx = refundTxHex;
