@@ -151,7 +151,7 @@ function cmd_setRefund_cb(channelObj, refundTx, result)
 	console.log("Refund TX signed.  Ready to commit funds.");
 }
 
-function cmd_setRefund(channelId, pubkey, tx, txin_idx)
+function cmd_setRefund(channelId)
 {
 	var channelObj = wallet.datastore.channels[channelId];
 	if (!channelObj) {
@@ -175,27 +175,33 @@ function cmd_setRefund(channelId, pubkey, tx, txin_idx)
 
 	// build refund transaction, T2
 	var OUR_VOUT = 0;	// TODO: do not hardcode
-	var refundTx = new Transaction();
-	refundTx.version = 1;
-	refundTx.lock_time = channelObj["timelock.prefer"];
+	var txTemplate = {
+		version: 1,
+		lock_time: channelObj["timelock.prefer"],
+		ins: [],
+		outs: [],
+	};
 
 	// T2 input 0: T1's output 0
-	var emptyScript = new Script();
-	var txin = new TransactionIn({
-		oTxHash: coinUtil.formatHashFull(commitTx.getHash()),
-		oIndex: OUR_VOUT,
-		script: emptyScript.getBuffer(),
-		sequence: 0xffffffff,
-	});
-	refundTx.ins.push(txin);
+	var commitTxHash = commitTx.getHash();
+	var outpt = new Buffer(32 + 4);
+	commitTxHash.copy(outpt);
+	outpt.writeUInt32LE(OUR_VOUT, 32);
+	var txin = {
+		o: outpt,
+		s: coinUtil.EMPTY_BUFFER,
+		q: 0xffffffff,
+	};
+	txTemplate.ins.push(txin);
 
 	// T2 output 0: 100% to K1
-	var txout = new TransactionOut({
-		value: commitTx.outs[OUR_VOUT].v,
-		script: Script.createPubKeyHashOut(k1_addr.payload()),
-	});
-	refundTx.outs.push(txout);
+	var txout = {
+		v: commitTx.outs[OUR_VOUT].v,
+		s: Script.createPubKeyHashOut(k1_addr.payload()),
+	};
+	txTemplate.outs.push(txout);
 
+	var refundTx = new Transaction(txTemplate);
 	var refundTxHex = buffertools.toHex(refundTx.serialize());
 
 	channelObj.refundTx = refundTxHex;
@@ -346,10 +352,9 @@ function main()
 		break;
 
 	case "setRefund":
-		if (program.args.length != 5)
-			throw new Error("Usage: setRefund channel-id public tx txin_idx");
-		cmd_setRefund(program.args[1], program.args[2],
-			      program.args[3], program.args[4]);
+		if (program.args.length != 2)
+			throw new Error("Usage: setRefund channel-id");
+		cmd_setRefund(program.args[1]);
 		break;
 
 	case "commit":
