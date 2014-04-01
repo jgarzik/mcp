@@ -211,6 +211,7 @@ function cmdChannelSetRefund(req)
 	var k1 = remotePubkey.public;
 	var k2 = channelKey.public;
 	var scriptPubKey = Script.createMultisig(2, [k1, k2]);
+	scriptPubKey.updateBuffer();
 
 	// sign T1, paying to T2, without having ever seen T1
 	var txSigHash = tx.hashForSignature(scriptPubKey, inIdx,
@@ -222,6 +223,8 @@ function cmdChannelSetRefund(req)
 	var sigHex = buffertools.toHex(sig);
 
 	// update database
+	var msigAddrStr = wallet.addScript(scriptPubKey);
+	channel.msigAddr = msigAddrStr;
 	channel.remotePubkey = params.pubkey;
 	channel.refundTx = params.tx;
 	channel.state = 'signedRefund';
@@ -233,31 +236,30 @@ function cmdChannelSetRefund(req)
 	return jrpcServer.ok(req, result);
 }
 
-function matchScript(scriptBuf, k1, k2)
+function matchScript(scriptBuf, scriptHashStr)
 {
 	var script = new Script(scriptBuf);
-	return (script.chunks.length == 5 &&
-		script.chunk2[0] == OP_2 &&
-		Buffer.isBuffer(script.chunks[1]) &&
-		Buffer.isBuffer(script.chunks[2]) &&
-		script.chunk[3] == OP_2 &&
-		script.chunk[4] == OP_CHECKMULTISIG &&
-		script.chunks[1].toString() == k1.toString() &&
-		script.chunks[2].toString() == k2.toString());
+	return (script.isP2SH() &&
+		script.chunks[1].toString() == scriptHashStr);
 }
 
-function validCommitTx(tx, k1, k2)
+function validCommitTx(tx, msigAddrStr)
 {
+	var msigAddr = new Address(msigAddrStr);
+	var scriptHashStr = msigAddr.payload().toString();
+
 	var match = -1;
 	for (var i = 0; i < tx.outs.length; i++)
-		if (matchScript(tx.outs[i].s, k1, k2))
+		if (matchScript(tx.outs[i].s, scriptHashStr))
 			match = i;
-	if (match < 0)
+	if (match < 0) {
 		return { result: false };
+	}
 
 	var curtime = new Date();
-	if (tx.lock_time > curtime.getTime())
+	if (tx.lock_time > curtime.getTime()) {
 		return { result: false };
+	}
 
 	return { result: true, idx: match };
 }
@@ -367,8 +369,7 @@ function cmdChannelCommit(req)
 	if (!txFirstPay)
 		return jrpcServer.err(req, -15, 'transaction 2 decode failed');
 
-	var ctxInfo = validCommitTx(txCommit,
-				    remotePubkey.public, channelKey.public);
+	var ctxInfo = validCommitTx(txCommit, channel.msigAddr);
 	if (!ctxInfo.result)
 		return jrpcServer.err(req, -31, 'commit tx invalid');
 
@@ -497,6 +498,9 @@ function handle_jsonrpc_admin(req)
 	switch (req.method) {
 	case "dump":
 		return jrpcServer.ok(req, db);
+
+	case "dumpWallet":
+		return jrpcServer.ok(req, wallet.datastore);
 
 	case "stop":
 		stop_all();

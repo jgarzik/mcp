@@ -20,6 +20,7 @@ function list_commands()
 {
 	var s = "serveradm command summary:\n";
 	s += "dump\t\tDump serverd database\n";
+	s += "dumpWallet\t\tDump serverd wallet\n";
 	s += "help\t\tList this command summary\n";
 	s += "stop\t\tStop serverd\n";
 	console.log(s);
@@ -56,6 +57,16 @@ function cmd_dump()
 	});
 }
 
+function cmd_dumpWallet()
+{
+	rpc.call('dumpWallet', [], rpc_opts, function(err, result) {
+		if (err)
+			console.log("Server dump failed: " + err.message);
+		else
+			console.dir(result);
+	});
+}
+
 function main()
 {
 	if (program.args.length == 0) {
@@ -76,6 +87,9 @@ function main()
 		cmd_dump();
 		break;
 
+	case "dumpWallet":
+		cmd_dumpWallet();
+		break;
 	case "help":
 		list_commands();
 		return;
