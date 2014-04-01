@@ -2,6 +2,7 @@
 
 var fs = require('fs');
 var program = require('commander');
+var bignum = require('bignum');
 var rpc = require('../jrpcClient');
 var Address = require('bitcore/Address');
 var Wallet = require('bitcore/Wallet');
@@ -45,7 +46,7 @@ function list_commands()
 	s += "open\t\tOpen channel\n";
 	s += "setCommit CHANNEL-ID TX\tSet hex-encoded fund-commit TX (T1)\n";
 	s += "setRefund CHANNEL-ID\tBuild hex-encoded refund transaction\n";
-	s += "commit CHANNEL-ID TX\tCommit funds to channel\n";
+	s += "commit CHANNEL-ID FIRST-PAYMENT-AMOUNT\tCommit funds to channel\n";
 	s += "pay CHANNEL-ID SIGNATURE AMOUNT\tMake a payment\n";
 	console.log(s);
 }
@@ -128,7 +129,14 @@ function cmd_setCommit(channelId, txHex)
 
 function cmd_setRefund_cb(channelObj, refundTx, result)
 {
-	var sig = new Buffer(result.signature, 'hex');
+	var k2_sig = new Buffer(result.signature, 'hex');
+
+	// load K1
+	var k1_addrStr = channelObj.k1_addr;
+	var k1_addr = new Address(k1_addrStr);
+	var wK1 = new WalletKey({network: network});
+	wK1.fromObj(wallet.findAddress(k1_addrStr));
+	var k1_key = wK1.privKey;
 
 	// load K2
 	var k2_pubkeyBuf = new Buffer(channelObj.pubkey, 'hex');
@@ -137,17 +145,41 @@ function cmd_setRefund_cb(channelObj, refundTx, result)
 
 	// load multisig script
 	var scriptHex = wallet.datastore.scripts[channelObj.t1_output];
-	var scriptPubKey = new Script(new Buffer(scriptHex, 'hex'));
+	var scriptPubKeyBuf = new Buffer(scriptHex, 'hex');
+	var scriptPubKey = new Script(scriptPubKeyBuf);
 
 	// verify server signature for T2
 	var sigHash = refundTx.hashForSignature(scriptPubKey, 0,
 						Transaction.SIGHASH_ALL);
-	if (!k2_pubkey.verifySignatureSync(sigHash, sig)) {
+	if (!k2_pubkey.verifySignatureSync(sigHash, k2_sig)) {
 		console.error("Server refund TX bad signature");
 		process.exit(1);
 	}
 
-	// TODO: sign it ourselves!
+	// sign TX ourselves
+	var k1_sig = k1_key.signSync(sigHash);
+
+	// build P2SH multi-sig signature script. update TX input.
+	var scriptSig = new Script();
+	scriptSig.writeBytes(k1_sig);
+	scriptSig.writeBytes(k2_sig);
+	scriptSig.writeBytes(scriptPubKeyBuf);
+	scriptSig.updateBuffer();
+
+	// update TX input with signatures
+	refundTx.ins[0].s = scriptSig.getBuffer();
+
+	// update refund tx, now that it is signed
+	var refundTxHex = buffertools.toHex(refundTx.serialize());
+	channelObj.refundTx = refundTxHex;
+
+	// payment TX begins life as refund TX, without signatures, new seq#
+	var paymentTx = new Transaction(refundTx);
+	paymentTx.ins[0].s = coinUtil.EMPTY_BUFFER;
+	paymentTx.ins[0].q = 0;
+	channelObj.paymentTx = buffertools.toHex(paymentTx.serialize());
+
+	write_wallet();
 
 	console.log("Refund TX signed.  Ready to commit funds.");
 }
@@ -200,6 +232,16 @@ function cmd_setRefund(channelId)
 	});
 	refundTx.outs.push(txout);
 
+	// T2 output 1: 0% to K2
+	var k2_addr = new Address(channelObj.id);
+	scriptOut = Script.createPubKeyHashOut(k2_addr.payload());
+	scriptOut.updateBuffer();
+	var txout = new Transaction.Out({
+		v: coinUtil.bigIntToValue(bignum(0)),
+		s: scriptOut.getBuffer(),
+	});
+	refundTx.outs.push(txout);
+
 	var refundTxHex = buffertools.toHex(refundTx.serialize());
 
 	channelObj.refundTx = refundTxHex;
@@ -220,10 +262,70 @@ function cmd_setRefund(channelId)
 
 function cmd_commit_cb(channelObj, result)
 {
+	// signed payment TX was accepted. commit to wallet.
+	channelObj.paymentTx = channelObj.paymentTxPrep;
+	delete channelObj.paymentTxPrep;
+
 	channelObj.commit = true;
 	write_wallet();
 
 	console.log("Payment channel " + channelObj.id + " funds committed.");
+}
+
+function move_funds(channelObj, paymentVal)
+{
+	var paymentTx = new Transaction();
+	paymentTx.parse(new Buffer(channelObj.paymentTx, 'hex'));
+
+	// test payment amount < channel amount
+	var paymentAmtBn = bignum(paymentVal);
+	var channelAmtBn = coinUtil.valueToBigInt(paymentTx.outs[0].v);
+	if (channelAmtBn.cmp(paymentAmtBn) < 0)
+		return undefined;
+
+	// remainder = channel - payment
+	var remainderAmtBn = channelAmtBn.sub(paymentAmtBn);
+
+	// update output #0 with remaining refund (unpaid) value
+	paymentTx.outs[0].v = coinUtil.bigIntToValue(remainderAmtBn);
+
+	// update output #1 with payment value
+	paymentTx.outs[1].v = coinUtil.bigIntToValue(paymentAmtBn);
+
+	// load multisig script
+	var scriptHex = wallet.datastore.scripts[channelObj.t1_output];
+	var scriptPubKey = new Script(new Buffer(scriptHex, 'hex'));
+
+	// load K1
+	var k1_addrStr = channelObj.k1_addr;
+	var k1_addr = new Address(k1_addrStr);
+	var wK1 = new WalletKey({network: network});
+	wK1.fromObj(wallet.findAddress(k1_addrStr));
+	var k1_key = wK1.privKey;
+
+	// sign payment transaction
+	var sigHash = paymentTx.hashForSignature(scriptPubKey, 0,
+						Transaction.SIGHASH_ALL);
+	var k1_sig = k1_key.signSync(sigHash);
+
+	// build P2SH multi-sig signature script. update TX input.
+	var scriptSig = new Script();
+	scriptSig.writeBytes(k1_sig);
+	scriptSig.writeBytes(coinUtil.EMPTY_BUFFER);
+	scriptSig.writeBytes(scriptPubKey.getBuffer());
+	scriptSig.updateBuffer();
+
+	// update TX input with signatures
+	paymentTx.ins[0].s = scriptSig.getBuffer();
+
+	// update TX input sequence number
+	paymentTx.ins[0].q++;
+
+	// store updated TX in wallet as paymentTxPrep
+	channelObj.paymentTxPrep = buffertools.toHex(paymentTx.serialize());
+	write_wallet();
+
+	return k1_sig;
 }
 
 function cmd_commit(channelId, firstPaymentVal)
@@ -234,11 +336,16 @@ function cmd_commit(channelId, firstPaymentVal)
 		process.exit(1);
 	}
 
-	// TODO: build modified T3 containing first payment
+	// take payment TX (T3), modify it with payment value change
+	if (!move_funds(channelObj, firstPaymentVal)) {
+		console.error("Fund movement failed. Insufficient funds?");
+		process.exit(1);
+	}
 
 	rpc.call('channel.commit', [{
 		"channel.id": channelId,
-		tx: channgeObj.t1,
+		"tx.commit": channelObj.t1,
+		"tx.firstPayment": channelObj.paymentTxPrep,
 	}], rpc_opts, function(err, result) {
 		if (err)
 			console.log("channel.commit failed: " + err.message);
@@ -247,19 +354,40 @@ function cmd_commit(channelId, firstPaymentVal)
 	});
 }
 
+function cmd_pay_cb(channelObj)
+{
+	// signed payment TX was accepted. commit to wallet.
+	channelObj.paymentTx = channelObj.paymentTxPrep;
+	delete channelObj.paymentTxPrep;
+
+	write_wallet();
+
+	console.log("Payment channel " + channelObj.id + " payment accepted.");
+}
+
 function cmd_pay(channelId, amount)
 {
-	// FIXME
+	var channelObj = wallet.datastore.channels[channelId];
+	if (!channelObj) {
+		console.error("Unknown payment channel");
+		process.exit(1);
+	}
+
+	var k1_sig = move_funds(channelObj, amount);
+	if (!k1_sig) {
+		console.error("Fund movement failed. Insufficient funds?");
+		process.exit(1);
+	}
 
 	rpc.call('channel.pay', [{
 		"channel.id": channelId,
-		signature: signature,
+		signature: buffertools.toHex(k1_sig),
 		amount: amount,
 		}], rpc_opts, function(err, result) {
 		if (err)
 			console.log("channel.pay failed: " + err.message);
 		else
-			console.dir(result);
+			cmd_pay_cb(channelObj);
 	});
 }
 
