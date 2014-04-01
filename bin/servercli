@@ -41,9 +41,10 @@ function list_commands()
 {
 	var s = "servercli command summary:\n";
 	s += "init\t\tInit wallet\n";
+	s += "dump\t\tDump wallet\n";
 	s += "open\t\tOpen channel\n";
 	s += "setCommit CHANNEL-ID TX\tSet hex-encoded fund-commit TX (T1)\n";
-	s += "setRefund CHANNEL-ID PUBKEY TX TXIN-IDX\tSet hex-encoded refund transaction\n";
+	s += "setRefund CHANNEL-ID\tBuild hex-encoded refund transaction\n";
 	s += "commit CHANNEL-ID TX\tCommit funds to channel\n";
 	s += "pay CHANNEL-ID SIGNATURE AMOUNT\tMake a payment\n";
 	console.log(s);
