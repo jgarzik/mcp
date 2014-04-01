@@ -2,6 +2,7 @@
 
 var fs = require('fs');
 var program = require('commander');
+var bignum = require('bignum');
 var EncFile = require('bitcore/util/EncFile');
 var timeUtil = require('bitcore/util/time');
 var coinUtil = require('bitcore/util/util');
@@ -277,8 +278,9 @@ function findTxOutpt(tx, outpt)
 	return -1;
 }
 
-function findOutByAddr(tx, pkh)
+function findOutByAddr(tx, pubkey)
 {
+	var pkh = coinUtil.sha256ripe160(pubkey);
 	var pkhStr = pkh.toString();
 	for (var i = 0; i < tx.outs.length; i++) {
 		var txout = tx.outs[i];
@@ -297,33 +299,46 @@ function validFirstPay(channel, ctxInfo, txCommit, txFirstPay,
 	// ensure txFirstPay is connected to txCommit's matched output
 	var outpt = { hash: txCommit.getHash(), n: ctxInfo.idx };
 	var inIdx = findTxOutpt(txFirstPay, outpt);
-	if (inIdx < 0)
+	if (inIdx < 0) {
+		console.log("vfp: txoutpt");
 		return { result: false };
+	}
 
 	var txin = txFirstPay.ins[inIdx];
-	if (txin.q > 0xffffff)
+	if (txin.q > 0xffffff) {
+		console.log("vfp: seq");
 		return { result: false };
+	}
 	
+	// sig empty-sig p2sh-script
 	var scriptSig = new Script(txin.s);
-	if (scriptSig.chunks.length != 2)
+	if (scriptSig.chunks.length != 3) {
+		console.log("vfp: ssiglen");
 		return { result: false };
+	}
 
 	// locate the outputs directed to us, and to the client
 	var cliOutIdx = findOutByAddr(txFirstPay, remotePubkey.public);
 	var srvOutIdx = findOutByAddr(txFirstPay, channelKey.public);
-	if ((cliOutIdx < 0) || (srvOutIdx < 0))
+	if ((cliOutIdx < 0) || (srvOutIdx < 0) || (cliOutIdx == srvOutIdx)) {
+		console.log("vfp: outidx");
+		console.dir(cliOutIdx);
+		console.dir(srvOutIdx);
 		return { result: false };
+	}
 		
 	var val_in = coinUtil.valueToBigInt(txCommit.outs[ctxInfo.idx].v);
-	var val_cli = coinUtil.valueToBigInt(txfirstPay.outs[cliOutIdx].v);
-	var val_srv = coinUtil.valueToBigInt(txfirstPay.outs[srvOutIdx].v);
-	var fee = bignum(10000);
+	var val_cli = coinUtil.valueToBigInt(txFirstPay.outs[cliOutIdx].v);
+	var val_srv = coinUtil.valueToBigInt(txFirstPay.outs[srvOutIdx].v);
+	var fee = bignum(0);
 
 	var val_out = val_cli.add(val_srv);
 	val_out = val_out.add(fee);
 
-	if (val_in.lt(val_out))
+	if (val_in.lt(val_out)) {
+		console.log("vfp: val i/o");
 		return { result: false };
+	}
 
 	// FIXME: check client signature
 
@@ -390,6 +405,7 @@ function cmdChannelCommit(req)
 	channel.val_cli = ptxInfo.val_cli;
 	channel.val_srv = ptxInfo.val_srv;
 	channel.fee = ptxInfo.fee;
+	channel.state = 'active';
 	dbWriteSync();
 
 	var result = true;
@@ -406,7 +422,7 @@ function updatePayTx(channel, sigRaw, amount)
 
 	var buf = new Buffer(channel.txLastPayment, 'hex');
 	var tx = new Transaction();
-	tx.parse(txbuf);
+	tx.parse(buf);
 
 	var txin = tx.ins[channel.inIdx];
 
