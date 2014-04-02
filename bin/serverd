@@ -316,6 +316,7 @@ function validFirstPay(channel, ctxInfo, txCommit, txFirstPay,
 		console.log("vfp: ssiglen");
 		return { result: false };
 	}
+	var k1_sig = scriptSig.chunks[0];
 
 	// locate the outputs directed to us, and to the client
 	var cliOutIdx = findOutByAddr(txFirstPay, remotePubkey.public);
