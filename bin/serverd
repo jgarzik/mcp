@@ -309,6 +309,11 @@ function validFirstPay(channel, ctxInfo, txCommit, txFirstPay,
 		console.log("vfp: seq");
 		return { result: false };
 	}
+
+	// load K1
+	var k1_pubkeyBuf = new Buffer(channel.remotePubkey, 'hex');
+	var k1_pubkey = new KeyModule.Key();
+	k1_pubkey.public = k1_pubkeyBuf;
 	
 	// sig empty-sig p2sh-script
 	var scriptSig = new Script(txin.s);
@@ -341,7 +346,13 @@ function validFirstPay(channel, ctxInfo, txCommit, txFirstPay,
 		return { result: false };
 	}
 
-	// FIXME: check client signature
+	// check client signature. TODO: update this post-test
+	var sigHash = txFirstPay.hashForSignature(scriptPubKey, 0,
+						  Transaction.SIGHASH_ALL);
+	if (!k1_public.verifySignatureSync(sigHash, k1_sig)) {
+		console.log("vfp: cli sig");
+		return { result: false };
+	}
 
 	return {
 		result: true,
@@ -415,6 +426,11 @@ function cmdChannelCommit(req)
 
 function updatePayTx(channel, sigRaw, amount)
 {
+	// load K1
+	var k1_pubkeyBuf = new Buffer(channel.remotePubkey, 'hex');
+	var k1_pubkey = new KeyModule.Key();
+	k1_pubkey.public = k1_pubkeyBuf;
+
 	// move value cli -> srv
 	var val_cli = bignum(channel.val_cli);
 	val_cli = val_cli.sub(amount);
@@ -433,6 +449,7 @@ function updatePayTx(channel, sigRaw, amount)
 	// update signature in scriptSig
 	var scriptSig = new Script(txin.s);
 	scriptSig.chunks[0] = sigRaw;
+	scriptSig.updateBuffer();
 
 	// reduce client's output
 	var txout = tx.outs[channel.cliOutIdx];
@@ -442,8 +459,11 @@ function updatePayTx(channel, sigRaw, amount)
 	var txout = tx.outs[channel.srvOutIdx];
 	txout.v = coinUtil.bigIntToValue(val_srv);
 
-	// FIXME: verify updated signature
-	if (0)
+	// check client signature on updated TX. TODO: update this post-test
+	var k1_sig = sigRaw;
+	var sigHash = tx.hashForSignature(scriptPubKey, 0,
+					  Transaction.SIGHASH_ALL);
+	if (!k1_pubkey.verifySignatureSync(sigHash, k1_sig))
 		return false;
 
 	// store updated payment TX
