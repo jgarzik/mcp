@@ -1,16 +1,14 @@
-
-Payment channel server
-======================
+# Payment channel server
 
 WARNING: This is "alpha" quality demo software.
 
-Included programs
------------------
-* serverd: Payment channel server.  Run with --init to create db.
-* serveradm: Server administration utility.
-* servercli: Client utility, a thin wrapper over the RPC calls
+## Included programs
 
-Run with --help to get a command line summary.
+* `serverd`: Payment channel server. Run with `--init` to create db.
+* `serveradm`: Server administration utility.
+* `servercli`: Client utility, a thin wrapper over the RPC calls
+
+Run with `--help` to get a command line summary.
 
 Run the utilities with no arguments, to obtain a list of commands.
 
