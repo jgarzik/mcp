@@ -1,0 +1,29 @@
+{
+  "name": "mcp",
+  "version": "0.0.0",
+  "description": "Payment channel server",
+  "main": "jrpcClient.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/jgarzik/mcp.git"
+  },
+  "keywords": [
+    "bitcoin"
+  ],
+  "author": "Jeff Garzik",
+  "license": "unknown",
+  "bugs": {
+    "url": "https://github.com/jgarzik/mcp/issues"
+  },
+  "homepage": "https://github.com/jgarzik/mcp",
+  "dependencies": {
+    "commander": "~2.2.0",
+    "bignum": "~0.6.2",
+    "bitcore": "~0.1.11",
+    "winston": "~0.7.3",
+    "buffertools": "~2.1.2"
+  }
+}
